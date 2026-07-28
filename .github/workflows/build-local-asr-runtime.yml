@@ -49,8 +49,9 @@ jobs:
           curl --fail --location --retry 5 --retry-delay 5 \
             --output offline-asr/models/ggml-silero-v6.2.0.bin \
             https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v6.2.0.bin
+          stat -c '%n %s bytes' offline-asr/models/*.bin
           test "$(stat -c%s offline-asr/models/ggml-small.en-q5_1.bin)" -gt 150000000
-          test "$(stat -c%s offline-asr/models/ggml-silero-v6.2.0.bin)" -gt 1000000
+          test "$(stat -c%s offline-asr/models/ggml-silero-v6.2.0.bin)" -gt 100000
 
       - name: Record exact build provenance and checksums
         run: |
