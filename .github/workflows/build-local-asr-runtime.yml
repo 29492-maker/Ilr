@@ -1,0 +1,75 @@
+name: Build offline whisper.cpp runtime
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build CPU ASR package
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out trigger repository
+        uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build curl ca-certificates
+
+      - name: Build whisper.cpp CPU CLI
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/ggml-org/whisper.cpp.git whisper.cpp
+          cmake -S whisper.cpp -B whisper.cpp/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DWHISPER_BUILD_TESTS=OFF \
+            -DWHISPER_BUILD_EXAMPLES=ON \
+            -DWHISPER_BUILD_SERVER=OFF \
+            -DGGML_NATIVE=OFF \
+            -DGGML_OPENMP=ON
+          cmake --build whisper.cpp/build --target whisper-cli -j 2
+          test -x whisper.cpp/build/bin/whisper-cli
+
+      - name: Download quantized English model and VAD model
+        run: |
+          set -euo pipefail
+          mkdir -p offline-asr/bin offline-asr/models offline-asr/build-info
+          cp whisper.cpp/build/bin/whisper-cli offline-asr/bin/
+          curl --fail --location --retry 5 --retry-delay 5 \
+            --output offline-asr/models/ggml-small.en-q5_1.bin \
+            https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en-q5_1.bin
+          curl --fail --location --retry 5 --retry-delay 5 \
+            --output offline-asr/models/ggml-silero-v6.2.0.bin \
+            https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v6.2.0.bin
+          test "$(stat -c%s offline-asr/models/ggml-small.en-q5_1.bin)" -gt 150000000
+          test "$(stat -c%s offline-asr/models/ggml-silero-v6.2.0.bin)" -gt 1000000
+
+      - name: Record exact build provenance and checksums
+        run: |
+          set -euo pipefail
+          git -C whisper.cpp rev-parse HEAD > offline-asr/build-info/whisper_cpp_commit.txt
+          git -C whisper.cpp remote get-url origin > offline-asr/build-info/whisper_cpp_origin.txt
+          cmake --version > offline-asr/build-info/cmake_version.txt
+          ninja --version > offline-asr/build-info/ninja_version.txt
+          uname -a > offline-asr/build-info/build_uname.txt
+          ldd offline-asr/bin/whisper-cli > offline-asr/build-info/whisper_cli_ldd.txt || true
+          offline-asr/bin/whisper-cli --help > offline-asr/build-info/whisper_cli_help.txt 2>&1 || true
+          find offline-asr -type f -print0 | sort -z | xargs -0 sha256sum > offline-asr/build-info/package_sha256.txt
+          du -ah offline-asr | sort -h > offline-asr/build-info/package_sizes.txt
+
+      - name: Upload generic offline ASR package
+        uses: actions/upload-artifact@v4
+        with:
+          name: offline-whisper-cpp-small-en-q5-vad
+          path: offline-asr
+          compression-level: 0
+          retention-days: 2
+          if-no-files-found: error
